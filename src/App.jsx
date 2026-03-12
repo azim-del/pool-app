@@ -399,8 +399,8 @@ export default function PoolApp() {
                 const val = readings[key];
                 const status = val !== "" ? getStatus(key, parseFloat(val)) : null;
                 return (
-                  <div key={key} style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${status ? getStatusColor(status) + "44" : "rgba(255,255,255,0.08)"}`, borderRadius: 14, padding: 18 }}>
-                    <div style={{ fontSize: 12, color: "#64748b", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
+                  <div key={key} style={{ background: "rgba(255,255,255,0.04)", border: `${status && status !== "ok" ? "2px" : "1px"} solid ${status ? getStatusColor(status) + (status !== "ok" ? "99" : "44") : "rgba(255,255,255,0.08)"}`, borderRadius: 14, padding: 18 }}>
+                    <div style={{ fontSize: 12, color: "#7dd3fc", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="number" step="0.1" placeholder={`${r.ideal}`} value={val}
                         onChange={e => setReadings(prev => ({ ...prev, [key]: e.target.value }))}
