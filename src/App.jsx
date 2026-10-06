@@ -62,17 +62,33 @@ function computeRecommendations(readings, poolVolume) {
   if (cl !== null && clStatus === "low") {
     const urgent = cl === 0;
     const deficit = 2.0 - cl;
+    // Liquid chlorine (10% sodium hypochlorite): ~10 oz raises chlorine ~1 ppm per 10,000 gal
+    const liquidOz = Math.round(deficit * 10 * vol);
+    // Tablets for maintenance top-up only (when not critically low)
     const tablets = Math.max(1, Math.ceil(deficit * vol));
-    steps.push({
-      title: urgent ? "⚠️ Add Chlorine — Pool is unprotected!" : "Add Chlorine",
-      badge: `Currently: ${cl} ppm — Target: 1–3 ppm`,
-      chemical: "Trichlor Tablet (3\" tablet)",
-      amount: `${tablets} tablet${tablets !== 1 ? "s" : ""}`,
-      waitAfter: "Wait 24 hours, then retest chlorine.",
-      instruction: `Drop ${tablets} tablet${tablets !== 1 ? "s" : ""} into the skimmer basket or floater. Make sure the pump is running. Don't touch the tablet with bare hands — use the container lid or gloves.`,
-      urgent,
-      color: urgent ? "#ef4444" : "#f59e0b",
-    });
+    if (urgent) {
+      steps.push({
+        title: "⚠️ Add Liquid Chlorine — Pool is unprotected!",
+        badge: `Currently: ${cl} ppm — Target: 1–3 ppm`,
+        chemical: "Liquid Chlorine (Sodium Hypochlorite, 10%)",
+        amount: `${liquidOz} oz (~${(liquidOz / 128).toFixed(1)} gallon)`,
+        waitAfter: "Wait 2–4 hours, then retest. Once above 1 ppm, add a maintenance tablet to keep it there.",
+        instruction: `Your chlorine is at zero — the pool is not safe to swim in right now. Pour ${liquidOz} oz of liquid chlorine (sold as pool chlorine or sodium hypochlorite) slowly around the edges of the pool with the pump running. Wear gloves and avoid splashing. Liquid chlorine works fast — retest in a few hours rather than waiting a full day.`,
+        urgent: true,
+        color: "#ef4444",
+      });
+    } else {
+      steps.push({
+        title: "Top Up Chlorine",
+        badge: `Currently: ${cl} ppm — Target: 1–3 ppm`,
+        chemical: "Trichlor Tablet (3\" tablet) — for slow, steady top-up",
+        amount: `${tablets} tablet${tablets !== 1 ? "s" : ""}`,
+        waitAfter: "Wait 24 hours, then retest chlorine.",
+        instruction: `Your chlorine is a little low but not at zero, so a slow-dissolving tablet is fine here. Drop ${tablets} tablet${tablets !== 1 ? "s" : ""} into the skimmer basket or floater with the pump running. Don't touch the tablet with bare hands — use the container lid or gloves. If you need a faster correction, you can use liquid chlorine instead (about ${liquidOz} oz).`,
+        urgent: false,
+        color: "#f59e0b",
+      });
+    }
   } else if (cl !== null && clStatus === "high") {
     steps.push({
       title: "Chlorine is too high — don't swim yet",
