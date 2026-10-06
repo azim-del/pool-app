@@ -268,7 +268,13 @@ export default function PoolApp() {
     try { return JSON.parse(localStorage.getItem("pool_maintenance") || "{}"); } catch { return {}; }
   });
   const [notes, setNotes] = useState("");
-  const [showHistory, setShowHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(null);
+  const [actionLog, setActionLog] = useState({}); // { stepIndex: { done: bool, comment: string } }
+  const [purchases, setPurchases] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("pool_purchases") || "[]"); } catch { return []; }
+  });
+  const [newPurchase, setNewPurchase] = useState({ date: new Date().toISOString().slice(0,10), product: "", brand: "", quantity: "", unit: "lbs", price: "", store: "", notes: "" });
+  const [showPurchaseForm, setShowPurchaseForm] = useState(false);
 
   useEffect(() => {
     localStorage.setItem("pool_history", JSON.stringify(history));
@@ -278,18 +284,24 @@ export default function PoolApp() {
     localStorage.setItem("pool_maintenance", JSON.stringify(maintenanceLogs));
   }, [maintenanceLogs]);
 
+  useEffect(() => {
+    localStorage.setItem("pool_purchases", JSON.stringify(purchases));
+  }, [purchases]);
+
   const effectiveVolume = poolVolume === "custom" ? (parseInt(customVolume) || 10000) : poolVolume;
 
   const handleAnalyze = useCallback(async () => {
     const recs = computeRecommendations(readings, effectiveVolume);
     setRecommendations(recs);
     setAiAnalysis("");
+    setActionLog({});
 
     const entry = {
       date: new Date().toISOString(),
       readings: { ...readings },
       poolVolume: effectiveVolume,
       notes,
+      actionLog: {},
     };
     const newHistory = [entry, ...history].slice(0, 50);
     setHistory(newHistory);
@@ -316,6 +328,44 @@ export default function PoolApp() {
     const daysSince = Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
     return daysSince - task.intervalDays;
   };
+
+  const toggleStepDone = (i) => {
+    setActionLog(prev => {
+      const updated = { ...prev, [i]: { ...prev[i], done: !prev[i]?.done, comment: prev[i]?.comment || "" } };
+      // persist to most recent history entry
+      setHistory(h => {
+        if (h.length === 0) return h;
+        const copy = [...h];
+        copy[0] = { ...copy[0], actionLog: updated };
+        return copy;
+      });
+      return updated;
+    });
+  };
+
+  const setStepComment = (i, comment) => {
+    setActionLog(prev => {
+      const updated = { ...prev, [i]: { ...prev[i], comment } };
+      setHistory(h => {
+        if (h.length === 0) return h;
+        const copy = [...h];
+        copy[0] = { ...copy[0], actionLog: updated };
+        return copy;
+      });
+      return updated;
+    });
+  };
+
+  const addPurchase = () => {
+    if (!newPurchase.product) return;
+    setPurchases(prev => [{ ...newPurchase, id: Date.now() }, ...prev]);
+    setNewPurchase({ date: new Date().toISOString().slice(0,10), product: "", brand: "", quantity: "", unit: "lbs", price: "", store: "", notes: "" });
+    setShowPurchaseForm(false);
+  };
+
+  const deletePurchase = (id) => setPurchases(prev => prev.filter(p => p.id !== id));
+
+  const totalSpend = purchases.reduce((sum, p) => sum + (parseFloat(p.price) || 0), 0);
 
   const allReadingsEntered = Object.values(readings).some(v => v !== "");
 
@@ -358,7 +408,7 @@ export default function PoolApp() {
           <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.5px", textTransform: "uppercase" }}>Smart Pool Management</div>
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          {["test", "results", "maintenance", "history"].map(t => (
+          {["test", "results", "maintenance", "history", "purchases"].map(t => (
             <button key={t} className="tab-btn" onClick={() => setTab(t)} style={{
               padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500,
               background: tab === t ? "rgba(59,158,255,0.2)" : "transparent",
@@ -509,9 +559,29 @@ export default function PoolApp() {
                         </div>
 
                         {/* Wait message */}
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "10px 14px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
                           <span style={{ fontSize: 16 }}>⏱</span>
                           <span style={{ fontSize: 13, color: "#94a3b8", fontStyle: "italic" }}>{step.waitAfter}</span>
+                        </div>
+
+                        {/* Action log */}
+                        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", paddingTop: 12 }}>
+                          <button onClick={() => toggleStepDone(i)} style={{
+                            display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer",
+                            background: actionLog[i]?.done ? "rgba(34,197,94,0.15)" : "rgba(255,255,255,0.06)",
+                            color: actionLog[i]?.done ? "#22c55e" : "#94a3b8", fontSize: 13, fontWeight: 600, marginBottom: 8,
+                          }}>
+                            <span style={{ fontSize: 16 }}>{actionLog[i]?.done ? "✅" : "⬜"}</span>
+                            {actionLog[i]?.done ? "Done — marked complete" : "Mark as done"}
+                          </button>
+                          {actionLog[i]?.done && (
+                            <textarea
+                              placeholder="Add a note (optional) — e.g. 'added 3.5 lbs, water looked cloudy after'"
+                              value={actionLog[i]?.comment || ""}
+                              onChange={e => setStepComment(i, e.target.value)}
+                              style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px", color: "#cbd5e1", fontSize: 13, resize: "vertical", minHeight: 64, fontFamily: "inherit" }}
+                            />
+                          )}
                         </div>
                       </div>
                     </div>
@@ -624,6 +694,20 @@ export default function PoolApp() {
                             })}
                           </div>
                           {entry.notes && <div style={{ marginTop: 10, fontSize: 13, color: "#64748b", fontStyle: "italic" }}>"{entry.notes}"</div>}
+                          {entry.actionLog && Object.keys(entry.actionLog).length > 0 && (
+                            <div style={{ marginTop: 14 }}>
+                              <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Actions taken</div>
+                              {Object.entries(entry.actionLog).map(([idx, log]) => log.done && (
+                                <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6 }}>
+                                  <span style={{ color: "#22c55e", fontSize: 14, marginTop: 1 }}>✓</span>
+                                  <div>
+                                    <div style={{ fontSize: 13, color: "#cbd5e1", fontWeight: 500 }}>Step {parseInt(idx) + 1}</div>
+                                    {log.comment && <div style={{ fontSize: 12, color: "#64748b", fontStyle: "italic", marginTop: 2 }}>"{log.comment}"</div>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -633,6 +717,104 @@ export default function PoolApp() {
             )}
           </div>
         )}
+        {/* ── PURCHASES TAB ── */}
+        {tab === "purchases" && (
+          <div className="fade-in">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+              <div>
+                <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 26, fontWeight: 700, marginBottom: 4 }}>Purchase Tracker</h2>
+                <p style={{ color: "#64748b", fontSize: 14 }}>{purchases.length} purchase{purchases.length !== 1 ? "s" : ""} · Total spent: <strong style={{ color: "#7dd3fc" }}>${totalSpend.toFixed(2)}</strong></p>
+              </div>
+              <button onClick={() => setShowPurchaseForm(f => !f)} style={{
+                padding: "9px 18px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600,
+                background: "linear-gradient(135deg, #1d6fb8, #3b9eff)", color: "#fff",
+              }}>+ Add Purchase</button>
+            </div>
+
+            {/* Add Purchase Form */}
+            {showPurchaseForm && (
+              <div style={{ background: "rgba(59,158,255,0.06)", border: "1px solid rgba(59,158,255,0.2)", borderRadius: 16, padding: 20, marginTop: 20, marginBottom: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#7dd3fc", marginBottom: 16 }}>New Purchase</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 12 }}>
+                  {[
+                    { key: "date", label: "Date", type: "date" },
+                    { key: "product", label: "Product / Chemical *", type: "text", placeholder: "e.g. Alkalinity Increaser" },
+                    { key: "brand", label: "Brand", type: "text", placeholder: "e.g. HTH, BioGuard" },
+                    { key: "store", label: "Store", type: "text", placeholder: "e.g. Home Depot" },
+                    { key: "price", label: "Price ($)", type: "number", placeholder: "0.00" },
+                  ].map(f => (
+                    <div key={f.key}>
+                      <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>{f.label}</div>
+                      <input type={f.type} placeholder={f.placeholder || ""} value={newPurchase[f.key]}
+                        onChange={e => setNewPurchase(p => ({ ...p, [f.key]: e.target.value }))}
+                        style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "9px 12px", color: "#e8f4fd", fontSize: 14, fontFamily: "inherit" }} />
+                    </div>
+                  ))}
+                  <div>
+                    <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Quantity</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input type="number" placeholder="0" value={newPurchase.quantity}
+                        onChange={e => setNewPurchase(p => ({ ...p, quantity: e.target.value }))}
+                        style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "9px 12px", color: "#e8f4fd", fontSize: 14, fontFamily: "inherit" }} />
+                      <select value={newPurchase.unit} onChange={e => setNewPurchase(p => ({ ...p, unit: e.target.value }))}
+                        style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "9px 10px", color: "#e8f4fd", fontSize: 13, cursor: "pointer" }}>
+                        {["lbs", "oz", "gal", "L", "tablets", "bags", "bottles"].map(u => <option key={u} value={u} style={{ background: "#0d2444" }}>{u}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>Notes</div>
+                  <input type="text" placeholder="e.g. on sale, used half of bag" value={newPurchase.notes}
+                    onChange={e => setNewPurchase(p => ({ ...p, notes: e.target.value }))}
+                    style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "9px 12px", color: "#e8f4fd", fontSize: 14, fontFamily: "inherit" }} />
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={addPurchase} style={{ padding: "9px 20px", borderRadius: 9, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #1d6fb8, #3b9eff)", color: "#fff", fontSize: 13, fontWeight: 600 }}>Save Purchase</button>
+                  <button onClick={() => setShowPurchaseForm(false)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", background: "transparent", color: "#64748b", fontSize: 13 }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* Purchase List */}
+            {purchases.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "60px 20px", color: "#475569", marginTop: 20 }}>
+                <div style={{ fontSize: 48, marginBottom: 16 }}>🛒</div>
+                <p>No purchases logged yet. Hit "+ Add Purchase" to start tracking.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 20 }}>
+                {purchases.map((p) => (
+                  <div key={p.id} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "#e8f4fd" }}>{p.product}</div>
+                        {p.brand && <div style={{ fontSize: 11, color: "#64748b", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 10 }}>{p.brand}</div>}
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 13, color: "#64748b" }}>
+                        <span>📅 {new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+                        {p.quantity && <span>📦 {p.quantity} {p.unit}</span>}
+                        {p.store && <span>🏪 {p.store}</span>}
+                        {p.notes && <span style={{ fontStyle: "italic" }}>"{p.notes}"</span>}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                      {p.price && <div style={{ fontSize: 20, fontWeight: 800, color: "#7dd3fc" }}>${parseFloat(p.price).toFixed(2)}</div>}
+                      <button onClick={() => deletePurchase(p.id)} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 7, padding: "5px 10px", color: "#ef4444", fontSize: 12, cursor: "pointer" }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Spend summary */}
+                <div style={{ background: "rgba(59,158,255,0.06)", border: "1px solid rgba(59,158,255,0.15)", borderRadius: 12, padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                  <span style={{ fontSize: 14, color: "#64748b" }}>Total pool spend ({purchases.length} purchase{purchases.length !== 1 ? "s" : ""})</span>
+                  <span style={{ fontSize: 22, fontWeight: 800, color: "#7dd3fc" }}>${totalSpend.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
     </div>
   );
