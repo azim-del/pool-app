@@ -9,10 +9,12 @@ const POOL_IDEAL = {
 };
 
 const MAINTENANCE_TASKS = [
+  { id: "backwash", label: "Backwash Filter", intervalDays: 7, icon: "🔄" },
   { id: "skimmer", label: "Clean Skimmer Basket", intervalDays: 3, icon: "🧺" },
   { id: "brush", label: "Brush Pool Walls", intervalDays: 7, icon: "🖌️" },
   { id: "vacuum", label: "Vacuum Pool Floor", intervalDays: 7, icon: "🌊" },
-  { id: "filter", label: "Deep Clean Filter", intervalDays: 180, icon: "⚙️" },
+  { id: "filter", label: "Deep Clean Filter", intervalDays: 90, icon: "⚙️" },
+  { id: "shock", label: "Shock Treatment", intervalDays: 14, icon: "⚡" },
 ];
 
 const POOL_VOLUMES = [
@@ -289,8 +291,6 @@ export default function PoolApp() {
   });
   const [newPurchase, setNewPurchase] = useState({ date: new Date().toISOString().slice(0,10), product: "", brand: "", quantity: "", unit: "lbs", price: "", store: "", notes: "" });
   const [showPurchaseForm, setShowPurchaseForm] = useState(false);
-  const [editingHistory, setEditingHistory] = useState(null); // index of entry being edited
-  const [editDraft, setEditDraft] = useState(null); // draft copy of the entry
 
   useEffect(() => {
     localStorage.setItem("pool_history", JSON.stringify(history));
@@ -370,26 +370,6 @@ export default function PoolApp() {
       });
       return updated;
     });
-  };
-
-  const deleteHistory = (i) => {
-    setHistory(prev => prev.filter((_, idx) => idx !== i));
-    setShowHistory(null);
-  };
-
-  const startEditHistory = (i) => {
-    setEditingHistory(i);
-    setEditDraft({ ...history[i], readings: { ...history[i].readings } });
-  };
-
-  const saveHistoryEdit = () => {
-    setHistory(prev => {
-      const copy = [...prev];
-      copy[editingHistory] = { ...editDraft };
-      return copy;
-    });
-    setEditingHistory(null);
-    setEditDraft(null);
   };
 
   const addPurchase = () => {
@@ -702,93 +682,47 @@ export default function PoolApp() {
                 {history.map((entry, i) => {
                   const date = new Date(entry.date);
                   const allOk = Object.entries(entry.readings).every(([k, v]) => v === "" || getStatus(k, parseFloat(v)) === "ok");
-                  const isEditing = editingHistory === i;
-                  const labels = { ph: "pH", chlorine: "Chlorine", alkalinity: "Alkalinity", hardness: "Hardness", cyanuric: "CYA" };
                   return (
-                    <div key={i} style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${isEditing ? "rgba(59,158,255,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 14, overflow: "hidden" }}>
-                      
-                      {/* Header row */}
-                      <div style={{ padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
-                        onClick={() => !isEditing && setShowHistory(showHistory === i ? null : i)}>
+                    <div key={i} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, overflow: "hidden" }}>
+                      <div onClick={() => setShowHistory(showHistory === i ? null : i)} style={{ padding: "16px 20px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 15 }}>{date.toLocaleDateString("en-US", { weekday: "short", month: "long", day: "numeric", year: "numeric" })}</div>
                           <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })} · {entry.poolVolume?.toLocaleString()} gal</div>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <div style={{ width: 10, height: 10, borderRadius: "50%", background: allOk ? "#22c55e" : "#f59e0b" }}></div>
-                          {/* Edit button */}
-                          <button onClick={() => { isEditing ? (setEditingHistory(null), setEditDraft(null)) : startEditHistory(i); setShowHistory(i); }} style={{
-                            padding: "4px 10px", borderRadius: 7, border: "1px solid rgba(59,158,255,0.3)", cursor: "pointer",
-                            background: isEditing ? "rgba(59,158,255,0.15)" : "transparent", color: "#7dd3fc", fontSize: 12,
-                          }}>✏️ {isEditing ? "Cancel" : "Edit"}</button>
-                          {/* Delete button */}
-                          <button onClick={() => { if (window.confirm("Delete this test entry?")) deleteHistory(i); }} style={{
-                            padding: "4px 10px", borderRadius: 7, border: "1px solid rgba(239,68,68,0.3)", cursor: "pointer",
-                            background: "transparent", color: "#ef4444", fontSize: 12,
-                          }}>🗑 Delete</button>
-                          <span onClick={() => setShowHistory(showHistory === i ? null : i)} style={{ color: "#64748b", fontSize: 18, cursor: "pointer" }}>{showHistory === i ? "▲" : "▼"}</span>
+                          <span style={{ color: "#64748b", fontSize: 18 }}>{showHistory === i ? "▲" : "▼"}</span>
                         </div>
                       </div>
-
-                      {/* Expanded view */}
                       {showHistory === i && (
                         <div style={{ padding: "0 20px 16px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                          {isEditing ? (
-                            /* ── Edit mode ── */
-                            <div style={{ marginTop: 14 }}>
-                              <div style={{ fontSize: 12, color: "#7dd3fc", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Edit Readings</div>
-                              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10, marginBottom: 14 }}>
-                                {Object.entries(labels).map(([key, label]) => (
-                                  <div key={key}>
-                                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>{label} {POOL_IDEAL[key].unit ? `(${POOL_IDEAL[key].unit})` : ""}</div>
-                                    <input type="number" step="0.1" value={editDraft.readings[key]}
-                                      onChange={e => setEditDraft(d => ({ ...d, readings: { ...d.readings, [key]: e.target.value } }))}
-                                      style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "8px 10px", color: "#e8f4fd", fontSize: 15, fontFamily: "inherit" }} />
-                                  </div>
-                                ))}
-                              </div>
-                              <div style={{ marginBottom: 14 }}>
-                                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Notes</div>
-                                <input type="text" value={editDraft.notes || ""}
-                                  onChange={e => setEditDraft(d => ({ ...d, notes: e.target.value }))}
-                                  style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 8, padding: "8px 10px", color: "#e8f4fd", fontSize: 14, fontFamily: "inherit" }} />
-                              </div>
-                              <div style={{ display: "flex", gap: 8 }}>
-                                <button onClick={saveHistoryEdit} style={{ padding: "8px 18px", borderRadius: 8, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #1d6fb8, #3b9eff)", color: "#fff", fontSize: 13, fontWeight: 600 }}>Save Changes</button>
-                                <button onClick={() => { setEditingHistory(null); setEditDraft(null); }} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", background: "transparent", color: "#64748b", fontSize: 13 }}>Cancel</button>
-                              </div>
-                            </div>
-                          ) : (
-                            /* ── Read mode ── */
-                            <>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-                                {Object.entries(entry.readings).map(([key, val]) => {
-                                  if (val === "") return null;
-                                  const status = getStatus(key, parseFloat(val));
-                                  return (
-                                    <div key={key} style={{ padding: "6px 12px", borderRadius: 8, background: getStatusColor(status) + "15", border: `1px solid ${getStatusColor(status)}33` }}>
-                                      <span style={{ fontSize: 11, color: "#64748b" }}>{labels[key]} </span>
-                                      <span style={{ fontSize: 14, fontWeight: 600, color: getStatusColor(status) }}>{val}{POOL_IDEAL[key].unit ? " " + POOL_IDEAL[key].unit : ""}</span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                              {entry.notes && <div style={{ marginTop: 10, fontSize: 13, color: "#64748b", fontStyle: "italic" }}>"{entry.notes}"</div>}
-                              {entry.actionLog && Object.keys(entry.actionLog).length > 0 && (
-                                <div style={{ marginTop: 14 }}>
-                                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Actions taken</div>
-                                  {Object.entries(entry.actionLog).map(([idx, log]) => log.done && (
-                                    <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6 }}>
-                                      <span style={{ color: "#22c55e", fontSize: 14, marginTop: 1 }}>✓</span>
-                                      <div>
-                                        <div style={{ fontSize: 13, color: "#cbd5e1", fontWeight: 500 }}>Step {parseInt(idx) + 1}</div>
-                                        {log.comment && <div style={{ fontSize: 12, color: "#64748b", fontStyle: "italic", marginTop: 2 }}>"{log.comment}"</div>}
-                                      </div>
-                                    </div>
-                                  ))}
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+                            {Object.entries(entry.readings).map(([key, val]) => {
+                              if (val === "") return null;
+                              const status = getStatus(key, parseFloat(val));
+                              const labels = { ph: "pH", chlorine: "Chlorine", alkalinity: "Alkalinity", hardness: "Hardness", cyanuric: "CYA" };
+                              return (
+                                <div key={key} style={{ padding: "6px 12px", borderRadius: 8, background: getStatusColor(status) + "15", border: `1px solid ${getStatusColor(status)}33` }}>
+                                  <span style={{ fontSize: 11, color: "#64748b" }}>{labels[key]} </span>
+                                  <span style={{ fontSize: 14, fontWeight: 600, color: getStatusColor(status) }}>{val}{POOL_IDEAL[key].unit ? " " + POOL_IDEAL[key].unit : ""}</span>
                                 </div>
-                              )}
-                            </>
+                              );
+                            })}
+                          </div>
+                          {entry.notes && <div style={{ marginTop: 10, fontSize: 13, color: "#64748b", fontStyle: "italic" }}>"{entry.notes}"</div>}
+                          {entry.actionLog && Object.keys(entry.actionLog).length > 0 && (
+                            <div style={{ marginTop: 14 }}>
+                              <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Actions taken</div>
+                              {Object.entries(entry.actionLog).map(([idx, log]) => log.done && (
+                                <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6 }}>
+                                  <span style={{ color: "#22c55e", fontSize: 14, marginTop: 1 }}>✓</span>
+                                  <div>
+                                    <div style={{ fontSize: 13, color: "#cbd5e1", fontWeight: 500 }}>Step {parseInt(idx) + 1}</div>
+                                    {log.comment && <div style={{ fontSize: 12, color: "#64748b", fontStyle: "italic", marginTop: 2 }}>"{log.comment}"</div>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                       )}
