@@ -1,4 +1,80 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { supabase, supabaseConfigured } from "./supabase";
+
+// ── Supabase row <-> app shape ────────────────────────────────────────────────
+const historyFromDb = (row) => ({
+  id: row.id,
+  date: row.date || row.created_at,
+  readings: row.readings || {},
+  poolVolume: row.pool_volume,
+  notes: row.notes || "",
+  actionLog: row.action_log || {},
+});
+
+const purchaseFromDb = (row) => ({
+  id: row.id,
+  date: row.date || "",
+  product: row.product || "",
+  brand: row.brand || "",
+  quantity: row.quantity || "",
+  unit: row.unit || "lbs",
+  price: row.price || "",
+  store: row.store || "",
+  notes: row.notes || "",
+});
+
+const purchaseToDb = (p) => ({
+  date: p.date, product: p.product, brand: p.brand, quantity: p.quantity,
+  unit: p.unit, price: p.price, store: p.store, notes: p.notes,
+});
+
+// Older builds kept everything in this browser's localStorage. On first load
+// after the Supabase switch, upload whatever is here once, then clear it.
+async function migrateLocalStorage() {
+  const read = (key, fallback) => {
+    try { return JSON.parse(localStorage.getItem(key) || fallback); } catch { return JSON.parse(fallback); }
+  };
+  const oldHistory = read("pool_history", "[]");
+  const oldPurchases = read("pool_purchases", "[]");
+  const oldMaintenance = read("pool_maintenance", "{}");
+
+  if (oldHistory.length) {
+    const rows = oldHistory.map(h => ({
+      created_at: h.date, date: h.date, readings: h.readings,
+      pool_volume: h.poolVolume, notes: h.notes || "", action_log: h.actionLog || {},
+    }));
+    const { error } = await supabase.from("test_history").insert(rows);
+    if (error) throw error;
+    localStorage.removeItem("pool_history");
+  }
+
+  if (oldPurchases.length) {
+    const rows = oldPurchases.map(p => ({
+      ...purchaseToDb(p),
+      // old purchase ids were Date.now() timestamps — reuse them to keep the order
+      ...(typeof p.id === "number" ? { created_at: new Date(p.id).toISOString() } : {}),
+    }));
+    const { error } = await supabase.from("purchases").insert(rows);
+    if (error) throw error;
+    localStorage.removeItem("pool_purchases");
+  }
+
+  const taskIds = Object.keys(oldMaintenance);
+  if (taskIds.length) {
+    // only push a local date if it's newer than what another device already saved
+    const { data: remote, error: readErr } = await supabase.from("maintenance_logs").select("*");
+    if (readErr) throw readErr;
+    const remoteMap = Object.fromEntries((remote || []).map(r => [r.task_id, r.last_done]));
+    const rows = taskIds
+      .filter(id => !remoteMap[id] || new Date(oldMaintenance[id]) > new Date(remoteMap[id]))
+      .map(id => ({ task_id: id, last_done: oldMaintenance[id] }));
+    if (rows.length) {
+      const { error } = await supabase.from("maintenance_logs").upsert(rows);
+      if (error) throw error;
+    }
+    localStorage.removeItem("pool_maintenance");
+  }
+}
 
 const POOL_IDEAL = {
   ph: { min: 7.2, max: 7.6, ideal: 7.4, unit: "" },
@@ -281,47 +357,87 @@ if (typeof document !== "undefined") {
 export default function PoolApp() {
   const [tab, setTab] = useState("test");
   const [readings, setReadings] = useState({ ph: "", chlorine: "", alkalinity: "", hardness: "", cyanuric: "" });
-  const [poolVolume, setPoolVolume] = useState(10000);
+  const [poolVolume, setPoolVolume] = useState(5000);
   const [customVolume, setCustomVolume] = useState("");
   const [recommendations, setRecommendations] = useState(null);
   const [aiAnalysis, setAiAnalysis] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
-  const [history, setHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("pool_history") || "[]"); } catch { return []; }
-  });
-  const [maintenanceLogs, setMaintenanceLogs] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("pool_maintenance") || "{}"); } catch { return {}; }
-  });
+  const [history, setHistory] = useState([]);
+  const [maintenanceLogs, setMaintenanceLogs] = useState({}); // { taskId: ISO date }
   const [notes, setNotes] = useState("");
   const [showHistory, setShowHistory] = useState(null);
   const [actionLog, setActionLog] = useState({}); // { stepIndex: { done: bool, comment: string } }
-  const [purchases, setPurchases] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("pool_purchases") || "[]"); } catch { return []; }
-  });
+  const [currentEntryId, setCurrentEntryId] = useState(null); // Supabase id of the test the Results tab is showing
+  const [purchases, setPurchases] = useState([]);
   const [newPurchase, setNewPurchase] = useState({ date: new Date().toISOString().slice(0,10), product: "", brand: "", quantity: "", unit: "lbs", price: "", store: "", notes: "" });
   const [showPurchaseForm, setShowPurchaseForm] = useState(false);
   const [editingHistory, setEditingHistory] = useState(null); // index of entry being edited
   const [editDraft, setEditDraft] = useState(null); // draft copy of the entry
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const commentTimer = useRef(null);
 
+  const reportSaveError = (err) => {
+    console.error(err);
+    setSaveError("Couldn't save to the cloud — check your internet connection and try again.");
+  };
+
+  // ── Load everything from Supabase ──
+  const loadAll = useCallback(async ({ silent = false } = {}) => {
+    if (!supabaseConfigured) {
+      setLoadError("Supabase isn't configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your environment variables.");
+      setLoading(false);
+      return;
+    }
+    if (!silent) setLoading(true);
+    try {
+      const [h, p, m] = await Promise.all([
+        supabase.from("test_history").select("*").order("created_at", { ascending: false }),
+        supabase.from("purchases").select("*").order("created_at", { ascending: false }),
+        supabase.from("maintenance_logs").select("*"),
+      ]);
+      const err = h.error || p.error || m.error;
+      if (err) throw err;
+      setHistory((h.data || []).map(historyFromDb));
+      setPurchases((p.data || []).map(purchaseFromDb));
+      setMaintenanceLogs(Object.fromEntries((m.data || []).map(r => [r.task_id, r.last_done])));
+      setLoadError("");
+    } catch (err) {
+      console.error(err);
+      if (!silent) setLoadError("Couldn't load your pool data. Check your internet connection and try again.");
+    }
+    if (!silent) setLoading(false);
+  }, []);
+
+  // On first open: move any old on-device data up to Supabase, then load.
   useEffect(() => {
-    localStorage.setItem("pool_history", JSON.stringify(history));
-  }, [history]);
+    (async () => {
+      if (supabaseConfigured) {
+        try { await migrateLocalStorage(); }
+        catch (err) { console.error("localStorage import failed — will retry next load", err); }
+      }
+      await loadAll();
+    })();
+  }, [loadAll]);
 
+  // Refresh quietly when the app comes back to the foreground, so everyone sees each other's updates.
   useEffect(() => {
-    localStorage.setItem("pool_maintenance", JSON.stringify(maintenanceLogs));
-  }, [maintenanceLogs]);
+    const onVisible = () => { if (document.visibilityState === "visible") loadAll({ silent: true }); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [loadAll]);
 
-  useEffect(() => {
-    localStorage.setItem("pool_purchases", JSON.stringify(purchases));
-  }, [purchases]);
-
-  const effectiveVolume = poolVolume === "custom" ? (parseInt(customVolume) || 10000) : poolVolume;
+  const effectiveVolume = poolVolume === "custom" ? (parseInt(customVolume) || 5000) : poolVolume;
 
   const handleAnalyze = useCallback(async () => {
     const recs = computeRecommendations(readings, effectiveVolume);
     setRecommendations(recs);
     setAiAnalysis("");
     setActionLog({});
+    setCurrentEntryId(null);
+    setSaveError("");
 
     const entry = {
       date: new Date().toISOString(),
@@ -330,9 +446,24 @@ export default function PoolApp() {
       notes,
       actionLog: {},
     };
-    const newHistory = [entry, ...history].slice(0, 50);
-    setHistory(newHistory);
 
+    setSaving(true);
+    let newHistory = [entry, ...history];
+    const { data, error } = await supabase.from("test_history")
+      .insert([{ date: entry.date, readings: entry.readings, pool_volume: entry.poolVolume, notes: entry.notes, action_log: {} }])
+      .select()
+      .single();
+    setSaving(false);
+    if (error) {
+      reportSaveError(error);
+    } else {
+      const saved = historyFromDb(data);
+      newHistory = [saved, ...history];
+      setHistory(newHistory);
+      setCurrentEntryId(saved.id);
+    }
+
+    setTab("results");
     setAiLoading(true);
     try {
       const analysis = await fetchAIRecommendations(readings, effectiveVolume, newHistory);
@@ -341,11 +472,21 @@ export default function PoolApp() {
       setAiAnalysis("AI analysis unavailable. Using calculated recommendations above.");
     }
     setAiLoading(false);
-    setTab("results");
   }, [readings, effectiveVolume, notes, history]);
 
-  const logMaintenance = (taskId) => {
-    setMaintenanceLogs(prev => ({ ...prev, [taskId]: new Date().toISOString() }));
+  const logMaintenance = async (taskId) => {
+    const now = new Date().toISOString();
+    const previous = maintenanceLogs[taskId];
+    setMaintenanceLogs(prev => ({ ...prev, [taskId]: now }));
+    const { error } = await supabase.from("maintenance_logs").upsert({ task_id: taskId, last_done: now });
+    if (error) {
+      reportSaveError(error);
+      setMaintenanceLogs(prev => {
+        const copy = { ...prev };
+        if (previous) copy[taskId] = previous; else delete copy[taskId];
+        return copy;
+      });
+    }
   };
 
   const getDaysOverdue = (taskId) => {
@@ -356,36 +497,38 @@ export default function PoolApp() {
     return daysSince - task.intervalDays;
   };
 
+  // Save the Results-tab action log onto its test entry (local + Supabase)
+  const persistActionLog = async (updated) => {
+    if (!currentEntryId) return;
+    setHistory(h => h.map(e => e.id === currentEntryId ? { ...e, actionLog: updated } : e));
+    const { error } = await supabase.from("test_history").update({ action_log: updated }).eq("id", currentEntryId);
+    if (error) reportSaveError(error);
+  };
+
   const toggleStepDone = (i) => {
-    setActionLog(prev => {
-      const updated = { ...prev, [i]: { ...prev[i], done: !prev[i]?.done, comment: prev[i]?.comment || "" } };
-      // persist to most recent history entry
-      setHistory(h => {
-        if (h.length === 0) return h;
-        const copy = [...h];
-        copy[0] = { ...copy[0], actionLog: updated };
-        return copy;
-      });
-      return updated;
-    });
+    const updated = { ...actionLog, [i]: { ...actionLog[i], done: !actionLog[i]?.done, comment: actionLog[i]?.comment || "" } };
+    setActionLog(updated);
+    clearTimeout(commentTimer.current);
+    persistActionLog(updated);
   };
 
   const setStepComment = (i, comment) => {
-    setActionLog(prev => {
-      const updated = { ...prev, [i]: { ...prev[i], comment } };
-      setHistory(h => {
-        if (h.length === 0) return h;
-        const copy = [...h];
-        copy[0] = { ...copy[0], actionLog: updated };
-        return copy;
-      });
-      return updated;
-    });
+    const updated = { ...actionLog, [i]: { ...actionLog[i], comment } };
+    setActionLog(updated);
+    // wait until they stop typing before saving
+    clearTimeout(commentTimer.current);
+    commentTimer.current = setTimeout(() => persistActionLog(updated), 700);
   };
 
-  const deleteHistory = (i) => {
-    setHistory(prev => prev.filter((_, idx) => idx !== i));
+  const deleteHistory = async (i) => {
+    const entry = history[i];
+    const { error } = await supabase.from("test_history").delete().eq("id", entry.id);
+    if (error) { reportSaveError(error); return; }
+    setHistory(prev => prev.filter(e => e.id !== entry.id));
+    if (entry.id === currentEntryId) setCurrentEntryId(null);
     setShowHistory(null);
+    setEditingHistory(null);
+    setEditDraft(null);
   };
 
   const startEditHistory = (i) => {
@@ -393,24 +536,33 @@ export default function PoolApp() {
     setEditDraft({ ...history[i], readings: { ...history[i].readings } });
   };
 
-  const saveHistoryEdit = () => {
-    setHistory(prev => {
-      const copy = [...prev];
-      copy[editingHistory] = { ...editDraft };
-      return copy;
-    });
+  const saveHistoryEdit = async () => {
+    const draft = { ...editDraft };
+    const { error } = await supabase.from("test_history")
+      .update({ readings: draft.readings, notes: draft.notes })
+      .eq("id", draft.id);
+    if (error) { reportSaveError(error); return; }
+    setHistory(prev => prev.map(e => e.id === draft.id ? draft : e));
     setEditingHistory(null);
     setEditDraft(null);
   };
 
-  const addPurchase = () => {
+  const addPurchase = async () => {
     if (!newPurchase.product) return;
-    setPurchases(prev => [{ ...newPurchase, id: Date.now() }, ...prev]);
+    setSaving(true);
+    const { data, error } = await supabase.from("purchases").insert([purchaseToDb(newPurchase)]).select().single();
+    setSaving(false);
+    if (error) { reportSaveError(error); return; }
+    setPurchases(prev => [purchaseFromDb(data), ...prev]);
     setNewPurchase({ date: new Date().toISOString().slice(0,10), product: "", brand: "", quantity: "", unit: "lbs", price: "", store: "", notes: "" });
     setShowPurchaseForm(false);
   };
 
-  const deletePurchase = (id) => setPurchases(prev => prev.filter(p => p.id !== id));
+  const deletePurchase = async (id) => {
+    const { error } = await supabase.from("purchases").delete().eq("id", id);
+    if (error) { reportSaveError(error); return; }
+    setPurchases(prev => prev.filter(p => p.id !== id));
+  };
 
   const totalSpend = purchases.reduce((sum, p) => sum + (parseFloat(p.price) || 0), 0);
 
@@ -446,6 +598,8 @@ export default function PoolApp() {
         .fade-in { animation: fadeIn 0.4s ease forwards; }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
         .pulse { animation: pulse 1.5s infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { width: 40px; height: 40px; border-radius: 50%; border: 3px solid rgba(125,211,252,0.2); border-top-color: #7dd3fc; animation: spin 0.8s linear infinite; }
 
         /* ── Mobile bottom nav ── */
         .bottom-nav { display: none; }
@@ -506,6 +660,30 @@ export default function PoolApp() {
 
       <div className="main-content" style={{ maxWidth: 820, margin: "0 auto", padding: "24px 16px" }}>
 
+        {/* Save error banner */}
+        {saveError && (
+          <div style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 12, padding: "12px 16px", marginBottom: 16, display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 14, color: "#fca5a5" }}>⚠️ {saveError}</span>
+            <button onClick={() => setSaveError("")} style={{ background: "none", border: "none", color: "#fca5a5", fontSize: 18, cursor: "pointer" }}>✕</button>
+          </div>
+        )}
+
+        {/* Loading / load error */}
+        {loading ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "100px 20px", gap: 16 }}>
+            <div className="spinner" />
+            <div style={{ fontSize: 14, color: "#64748b" }}>Loading your pool data…</div>
+          </div>
+        ) : loadError ? (
+          <div style={{ textAlign: "center", padding: "60px 20px" }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>📡</div>
+            <p style={{ color: "#fca5a5", fontSize: 15, marginBottom: 20 }}>{loadError}</p>
+            {supabaseConfigured && (
+              <button onClick={() => loadAll()} style={{ padding: "11px 24px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #1d6fb8, #3b9eff)", color: "#fff", fontSize: 14, fontWeight: 600 }}>Try again</button>
+            )}
+          </div>
+        ) : (<>
+
         {/* ── TEST TAB ── */}
         {tab === "test" && (
           <div className="fade-in">
@@ -556,12 +734,12 @@ export default function PoolApp() {
             <textarea placeholder="Optional notes (weather, recent swim activity, visible algae, etc.)" value={notes} onChange={e => setNotes(e.target.value)}
               style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: "14px 16px", color: "#94a3b8", fontSize: 14, resize: "vertical", minHeight: 80, fontFamily: "inherit", marginBottom: 20 }} />
 
-            <button onClick={handleAnalyze} disabled={!allReadingsEntered} className="btn-primary ripple" style={{
+            <button onClick={handleAnalyze} disabled={!allReadingsEntered || saving} className="btn-primary ripple" style={{
               width: "100%", padding: "16px", borderRadius: 12, border: "none", cursor: allReadingsEntered ? "pointer" : "not-allowed",
               background: allReadingsEntered ? "linear-gradient(135deg, #1d6fb8, #3b9eff)" : "rgba(255,255,255,0.05)",
               color: allReadingsEntered ? "#fff" : "#475569", fontSize: 16, fontWeight: 600, letterSpacing: "0.3px",
             }}>
-              🔬 Analyze & Get Recommendations
+              {saving ? "Saving…" : "🔬 Analyze & Get Recommendations"}
             </button>
           </div>
         )}
@@ -752,7 +930,7 @@ export default function PoolApp() {
                   const isEditing = editingHistory === i;
                   const labels = { ph: "pH", chlorine: "Chlorine", alkalinity: "Alkalinity", hardness: "Hardness", cyanuric: "CYA" };
                   return (
-                    <div key={i} style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${isEditing ? "rgba(59,158,255,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 14, overflow: "hidden" }}>
+                    <div key={entry.id ?? i} style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${isEditing ? "rgba(59,158,255,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 14, overflow: "hidden" }}>
                       
                       {/* Header row */}
                       <div style={{ padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
@@ -899,7 +1077,7 @@ export default function PoolApp() {
                     style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: "9px 12px", color: "#e8f4fd", fontSize: 14, fontFamily: "inherit" }} />
                 </div>
                 <div style={{ display: "flex", gap: 10 }}>
-                  <button onClick={addPurchase} style={{ padding: "9px 20px", borderRadius: 9, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #1d6fb8, #3b9eff)", color: "#fff", fontSize: 13, fontWeight: 600 }}>Save Purchase</button>
+                  <button onClick={addPurchase} disabled={saving} style={{ padding: "9px 20px", borderRadius: 9, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #1d6fb8, #3b9eff)", color: "#fff", fontSize: 13, fontWeight: 600 }}>{saving ? "Saving…" : "Save Purchase"}</button>
                   <button onClick={() => setShowPurchaseForm(false)} style={{ padding: "9px 16px", borderRadius: 9, border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", background: "transparent", color: "#64748b", fontSize: 13 }}>Cancel</button>
                 </div>
               </div>
@@ -921,7 +1099,7 @@ export default function PoolApp() {
                         {p.brand && <div style={{ fontSize: 11, color: "#64748b", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: 10 }}>{p.brand}</div>}
                       </div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 13, color: "#64748b" }}>
-                        <span>📅 {new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+                        <span>📅 {new Date(p.date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
                         {p.quantity && <span>📦 {p.quantity} {p.unit}</span>}
                         {p.store && <span>🏪 {p.store}</span>}
                         {p.notes && <span style={{ fontStyle: "italic" }}>"{p.notes}"</span>}
@@ -944,6 +1122,7 @@ export default function PoolApp() {
           </div>
         )}
 
+        </>)}
       </div>
     </div>
   );
