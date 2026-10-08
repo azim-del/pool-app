@@ -266,6 +266,17 @@ Be concise, practical, and conversational. Use plain language. Keep total respon
   return data.content?.[0]?.text || "Unable to fetch AI analysis.";
 }
 
+// Ensure viewport meta is set for mobile
+if (typeof document !== "undefined") {
+  let meta = document.querySelector('meta[name="viewport"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "viewport";
+    document.head.appendChild(meta);
+  }
+  meta.content = "width=device-width, initial-scale=1, viewport-fit=cover";
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function PoolApp() {
   const [tab, setTab] = useState("test");
@@ -408,45 +419,56 @@ export default function PoolApp() {
   return (
     <div style={{
       minHeight: "100vh",
+      minWidth: "100vw",
       background: "linear-gradient(135deg, #0a1628 0%, #0d2444 50%, #0a1628 100%)",
+      backgroundAttachment: "fixed",
       fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
       color: "#e8f4fd",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Playfair+Display:wght@700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { margin: 0; padding: 0; min-height: 100%; background: #0a1628; }
+        * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: #0a1628; }
         ::-webkit-scrollbar-thumb { background: #1e4a7a; border-radius: 3px; }
-        input { outline: none; }
+        input, textarea, select { outline: none; -webkit-appearance: none; }
         input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
-        .tab-btn { transition: all 0.2s ease; }
-        .tab-btn:hover { opacity: 0.85; }
+        .tab-btn { transition: all 0.2s ease; -webkit-tap-highlight-color: transparent; }
         .card { backdrop-filter: blur(12px); }
         .param-input { transition: border-color 0.2s, box-shadow 0.2s; }
         .param-input:focus { border-color: #3b9eff !important; box-shadow: 0 0 0 3px rgba(59,158,255,0.15); }
         .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(59,158,255,0.35); }
-        .btn-primary { transition: all 0.2s; }
+        .btn-primary { transition: all 0.2s; -webkit-tap-highlight-color: transparent; }
         .ripple:active { transform: scale(0.97); }
-        .maintenance-card:hover { border-color: rgba(59,158,255,0.4) !important; transform: translateY(-1px); }
-        .maintenance-card { transition: all 0.2s; }
+        .maintenance-card { transition: all 0.2s; -webkit-tap-highlight-color: transparent; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .fade-in { animation: fadeIn 0.4s ease forwards; }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
         .pulse { animation: pulse 1.5s infinite; }
+
+        /* ── Mobile bottom nav ── */
+        .bottom-nav { display: none; }
+        .top-tabs { display: flex; }
+        @media (max-width: 640px) {
+          .top-tabs { display: none; }
+          .bottom-nav { display: flex; }
+          .main-content { padding-bottom: 80px !important; }
+        }
       `}</style>
 
       {/* Header */}
-      <div style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "16px 24px", display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ fontSize: 28 }}>🏊</div>
+      <div style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "14px 20px", display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, zIndex: 100, backdropFilter: "blur(12px)" }}>
+        <div style={{ fontSize: 26 }}>🏊</div>
         <div>
-          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, color: "#7dd3fc", letterSpacing: "-0.3px" }}>PoolIQ</div>
-          <div style={{ fontSize: 11, color: "#64748b", letterSpacing: "0.5px", textTransform: "uppercase" }}>Smart Pool Management</div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "#7dd3fc", letterSpacing: "-0.3px" }}>PoolIQ</div>
+          <div style={{ fontSize: 10, color: "#64748b", letterSpacing: "0.5px", textTransform: "uppercase" }}>Smart Pool Management</div>
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        {/* Desktop tabs in header */}
+        <div className="top-tabs" style={{ marginLeft: "auto", gap: 4 }}>
           {["test", "results", "maintenance", "history", "purchases"].map(t => (
             <button key={t} className="tab-btn" onClick={() => setTab(t)} style={{
-              padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500,
+              padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500,
               background: tab === t ? "rgba(59,158,255,0.2)" : "transparent",
               color: tab === t ? "#7dd3fc" : "#64748b",
               borderBottom: tab === t ? "2px solid #3b9eff" : "2px solid transparent",
@@ -457,7 +479,32 @@ export default function PoolApp() {
         </div>
       </div>
 
-      <div style={{ maxWidth: 820, margin: "0 auto", padding: "28px 20px" }}>
+      {/* Mobile bottom nav */}
+      <div className="bottom-nav" style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100,
+        background: "#0d1f3c", borderTop: "1px solid rgba(255,255,255,0.1)",
+        padding: "8px 0 20px",
+        justifyContent: "space-around", alignItems: "center",
+      }}>
+        {[
+          { id: "test", icon: "🧪", label: "Test" },
+          { id: "results", icon: "📊", label: "Results" },
+          { id: "maintenance", icon: "🔧", label: "Tasks" },
+          { id: "history", icon: "📋", label: "History" },
+          { id: "purchases", icon: "🛒", label: "Purchases" },
+        ].map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+            background: "none", border: "none", cursor: "pointer", padding: "4px 8px",
+            color: tab === t.id ? "#7dd3fc" : "#475569",
+          }}>
+            <span style={{ fontSize: 20 }}>{t.icon}</span>
+            <span style={{ fontSize: 10, fontWeight: tab === t.id ? 600 : 400 }}>{t.label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="main-content" style={{ maxWidth: 820, margin: "0 auto", padding: "24px 16px" }}>
 
         {/* ── TEST TAB ── */}
         {tab === "test" && (
